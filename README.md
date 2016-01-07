@@ -1,2 +1,2 @@
 # go2test
-a framework based on golang
+A framework based on golang
