@@ -5,7 +5,7 @@ import (
 )
 
 // Test to set option with string value
-func Test_StringOption(t *testing.T) {
+func Test_Option(t *testing.T) {
 	go2test, _ := NewGo2Test()
 	_, replaced := go2test.SetOption("string", "string_value")
 	if replaced {
@@ -28,5 +28,36 @@ func Test_StringOption(t *testing.T) {
 
 	if val != "string_value 2" {
 		t.Fatalf("Get wrong value!")
+	}
+}
+
+
+func Test_FeatureLocation(t *testing.T) {
+	go2test, _ := NewGo2Test()
+	matches, err := go2test.SetFeaturesLocation("./*.go")
+	if err != nil {
+		t.Fatalf("Can't load file list!")
+	}
+	existed := false
+	for _, fpath := range matches {
+		if fpath == "go2test_test.go" {
+			existed = true
+		}
+	}
+	if !existed {
+		t.Fatalf("Can't find the target file")
+	}
+	matches2, ok := go2test.GetOption(G2T_FEATURES)
+	if !ok {
+		t.Fatalf("Saved files list to option failed")
+	}
+	existed = false
+	for _, fpath := range matches2.([]string) {
+		if fpath == "go2test_test.go" {
+			existed = true
+		}
+	}
+	if !existed {
+		t.Fatalf("Saved wrong list to option")
 	}
 }
