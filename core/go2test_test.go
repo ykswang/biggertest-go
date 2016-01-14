@@ -6,7 +6,7 @@ import (
 
 // Test to set option with string value
 func Test_Option(t *testing.T) {
-	go2test, _ := NewGo2Test()
+	go2test := NewGo2Test()
 	_, replaced := go2test.SetOption("string", "string_value")
 	if replaced {
 		t.Fatalf("replaced signal shoud be false while the key is new")
@@ -33,7 +33,7 @@ func Test_Option(t *testing.T) {
 
 
 func Test_FeatureLocation(t *testing.T) {
-	go2test, _ := NewGo2Test()
+	go2test := NewGo2Test()
 	matches, err := go2test.SetFeaturesLocation("./*.go")
 	if err != nil {
 		t.Fatalf("Can't load file list!")
@@ -59,5 +59,17 @@ func Test_FeatureLocation(t *testing.T) {
 	}
 	if !existed {
 		t.Fatalf("Saved wrong list to option")
+	}
+}
+
+
+func Test_AddStep(t *testing.T) {
+	go2test := NewGo2Test()
+	go2test.AddStep("^Hello (.*)$", func()(int){return 0})
+	if step, _ := go2test.getStep("Hello Go2Test"); step == nil {
+		t.Fatalf("Saved step failed with regex")
+	}
+	if step, _ := go2test.getStep("Oh Hello Go2Test"); step != nil {
+		t.Fatalf("Saved step failed with regex")
 	}
 }
