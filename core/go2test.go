@@ -4,11 +4,90 @@ import (
 	"reflect"
 	"regexp"
 	"errors"
+	"os"
+
+	ghk "github.com/cucumber/gherkin-go"
+	"strings"
+	"fmt"
 )
 
 
 const G2T_FEATURES = "@G2T_FEATURES"
 const G2T_STEPS = "@G2T_STEPS"
+
+type Handle struct {
+	Buffer  map[string]interface{}
+}
+
+
+type Step struct {
+	Text         string
+	Action       reflect.Value
+	Params       []reflect.Value
+}
+
+func (v *Step) Run() (error) {
+	return v.Action.Call(v.Params)
+}
+
+
+type Scenario struct {
+	Name            string
+	Description     string
+	Tags            map[string]interface{}
+	Steps           []Step
+	ExName          string
+	ExDescription   string
+	ExID            int
+
+	run_idx         int
+}
+
+
+func (v *Scenario) Run() {
+
+	defer func() {
+		if recover() != nil {
+			fmt.Printf("[ FAIL ] %s", v.Steps[v.run_idx].Text)
+		}
+		for _, step := range v.Steps[v.run_idx+1:] {
+			fmt.Printf("[ SKIP ] %s", step.Text)
+		}
+	}()
+
+	v.run_idx = 0
+	if v.ExID != -1 {
+		fmt.Printf("Scenario %s -- %s -- %d", v.Name, v.ExName, v.ExID)
+	} else {
+		fmt.Printf("Scenario %s", v.Name)
+	}
+
+	for _, step := range v.Steps {
+		err := step.Run()
+		if err != nil {
+			panic(err)
+		} else {
+			fmt.Printf("[ PASS ] %s", step.Text)
+			v.run_idx += 1
+		}
+	}
+}
+
+
+type Feature struct {
+	Name         string
+	Scenarios    []*Scenario
+	Description  string
+	Tags         map[string]interface{}
+}
+
+func (v *Feature) Run() {
+
+	fmt.Printf("Feature %s", v.Name)
+	for _, scenario := range v.Scenarios {
+		scenario.Run()
+	}
+}
 
 
 // ----------------------------------------------------------------------------------
@@ -17,6 +96,7 @@ const G2T_STEPS = "@G2T_STEPS"
 // ----------------------------------------------------------------------------------
 type Go2Test struct {
 	options  map[string]interface{}   // properties for the struct
+	handle   *Handle
 }
 
 
@@ -29,6 +109,8 @@ func NewGo2Test() (*Go2Test){
 	v := new(Go2Test)
 	v.options = make(map[string]interface{})
 	v.SetOption(G2T_STEPS, make(map[*regexp.Regexp]reflect.Value))
+	v.handle = new(Handle)
+	v.handle.Buffer = map[string]interface{}
 	return v
 }
 
@@ -113,7 +195,7 @@ func (v *Go2Test) AddStep(reg string, callback interface{}) error {
 // @return
 //    (*reflect.Value) callback with reflect type
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) getStep(step string) (*reflect.Value, error) {
+func (v *Go2Test) findStepAction(step string) (keywords []string, *regexp.Regexp, *reflect.Value, error) {
 	steps, ok := v.GetOption(G2T_STEPS)
 	if !ok {
 		return nil, errors.New("Please Call New2Go2Test() to create instance !!!")
@@ -121,10 +203,224 @@ func (v *Go2Test) getStep(step string) (*reflect.Value, error) {
 	for reg, callback := range steps.(map[*regexp.Regexp]reflect.Value) {
 		keywords := reg.FindStringSubmatch(step)
 		if len(keywords) != 0 {
-			return &callback, nil
+			return keywords, &callback, nil
 		}
 	}
-	return nil, errors.New("Invalid step string [" + step + "]")
+	return nil, nil, errors.New("Invalid step string [" + step + "]")
 }
+
+// ----------------------------------------------------------------------------------
+// Create Feature form *.feature file
+// @param
+//    path: (string) feature's path
+// @return
+//    (*Feature) The Feature{} instance
+//    (error) if anything failed
+// ----------------------------------------------------------------------------------
+func (v *Go2Test) createFeature(path string) (*Feature, error) {
+	feature := new(Feature)
+
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	gFeature, err := ghk.ParseFeature(f)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	// Description
+	feature.Description = gFeature.Description
+	feature.Name = gFeature.Name
+
+	// Tags
+	feature.Tags = make(map[string]interface{})
+	for _, tag := range gFeature.Tags {
+		feature.Tags[tag.Name] = make(map[string]interface{})
+	}
+
+	// Scenario
+	feature.Scenarios = make([]Scenario, 0)
+	for _, s := range gFeature.ScenarioDefinitions {
+		gScenario, ok := s.(*ghk.Scenario)
+		var scenario *Scenario
+		if ok {
+			scenario, err = v.createScenario(gScenario)
+		} else {
+			s, err = v.createScenarioArray(gScenario)
+		}
+		if err!= nil {
+			return nil, err
+		}
+		feature.Scenarios = append(feature.Scenarios, scenario)
+	}
+	return feature,nil
+}
+
+
+// ----------------------------------------------------------------------------------
+// Create *Scenario form *ghk.Scenario
+// @param
+//    gScenario: (*ghk.Scenario) The instance of *ghk.Scenario
+// @return
+//    (*Scenario) The Scenario{} instance
+//    (error) if anything failed
+// ----------------------------------------------------------------------------------
+func (v *Go2Test) createScenario(gScenario *ghk.Scenario) (*Scenario, error) {
+	scenario := new(Scenario)
+
+	// Description
+	scenario.Description = gScenario.Description
+
+	// No Exmaples
+	scenario.ExID = -1
+
+	// Tags
+	scenario.Tags = make(map[string]interface{})
+	for _, tag := range gScenario.Tags {
+		scenario.Tags[tag.Name] = make(map[string]interface{})
+	}
+
+	// Step
+	scenario.Steps = make([]Step, 0)
+	for _, s := range gScenario.Steps {
+		gStep, ok := s.(*ghk.Step)
+		if ok {
+			step, err := v.createStep(gStep, map[string]string{})
+			if err != nil {
+				return nil, err
+			}
+			scenario.Steps = append(scenario.Steps, step)
+		} else {
+			return nil, errors.New("Invaild Step caused by cucumber/gherkin-go")
+		}
+	}
+
+	return scenario, nil
+}
+
+
+// ----------------------------------------------------------------------------------
+// Create *Scenario form *ghk.ScenarioOutline
+// @param
+//    gScenario: (*ghk.ScenarioOutline) The instance of *ghk.ScenarioOutline
+// @return
+//    (*Scenario) The Scenario{} instance
+//    (error) if anything failed
+// ----------------------------------------------------------------------------------
+func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline ) ([]*Scenario, error) {
+
+	scenarios := make([]*Scenario, 0)
+	for _, gExample := range gScenario.Examples {
+		for id, body := range gExample.TableBody {
+			scenario := new(Scenario)
+			scenario.Name = gScenario.Name
+			scenario.Description = gScenario.Description
+			scenario.ExName = gExample.Name
+			scenario.Description = gExample.Description
+			scenario.ExID = id
+			data := map[string]string{}
+			for i, cell := range body.Cells {
+				data[gExample.TableHeader.Cells[i].Value] = cell.Value
+			}
+			scenario.Steps = make([]*Step, 0)
+			for _, gStep := range gScenario.Steps {
+				step, err := v.createStep(gStep, data)
+				if err != nil {
+					return nil, err
+				}
+				scenario.Steps = append(scenario.Steps, step)
+			}
+			scenarios = append(scenarios, scenario)
+		}
+	}
+	return scenarios, nil
+}
+
+
+// ----------------------------------------------------------------------------------
+// Create Step form *ghk.Step
+// @param
+//    gStep: (*ghk.Step) Instance of *ghk.Step
+//    example: (map[string]string) Line of Example
+// @return
+//    (*Step) The Step{} instance
+//    (error) if anything failed
+// ----------------------------------------------------------------------------------
+func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Step, error) {
+	step := new(Step)
+	step.Text = gStep.Text
+	step.Params = make([]reflect.Value, 0)
+	step.Params = append(step.Params, v.handle)
+
+	// update step text with example data
+	for key, val := range example {
+		step.Text = strings.Replace(step.Text, "<" + key + ">", val, -1)
+	}
+
+	// If with a special param
+	data, ok := gStep.Argument.(*ghk.DataTable)
+	if ok {
+		if len(data.Rows[0].Cells) > 1 {
+			// It's a map
+			param := make([]map[string]string, 0)
+			for _, row := range data.Rows[1:] {
+				r := make(map[string]string)
+				for idx, cell := range row.Cells {
+					r[data.Rows[0].Cells[idx].Value] = cell.Value
+				}
+				param = append(param, &reflect.ValueOf(r))
+			}
+			step.Params = append(step.Params, reflect.ValueOf(param))
+		} else {
+			// It's a slice
+			param := make([]string, 0)
+			for _, row := range data.Rows {
+				param = append(param, row.Cells[0].Value)
+			}
+			step.Params = append(step.Params, reflect.ValueOf(param))
+		}
+	}
+
+	// Find Kyewords, Action
+	keywords, action, err := v.findStepAction(step.Text)
+	if err != nil {
+		return nil, err
+	}
+	step.Action = *action
+
+	// If with regex params
+	if len(keywords) > 1 {
+		for _, keyword := range keywords[1:] {
+			step.Params = append(step.Params, reflect.ValueOf(keyword))
+		}
+	}
+
+	return step, nil
+}
+
+
+func (v *Go2Test) Run() (error) {
+
+	paths, ok := v.GetOption(G2T_FEATURES)
+	if !ok {
+		return errors.New("go2test:{\"message\":\"Please call SetFeaturesLocation before Run !\"}")
+	}
+
+	features := make([]*Feature, 0)
+	for _, path := range paths {
+		feature, err := v.createFeature(path)
+		if err != nil {
+			return err
+		}
+		features = append(features, feature)
+	}
+
+	for _, feature := range features {
+		feature.Run()
+	}
+}
+
 
 

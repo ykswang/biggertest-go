@@ -66,10 +66,10 @@ func Test_FeatureLocation(t *testing.T) {
 func Test_AddStep(t *testing.T) {
 	go2test := NewGo2Test()
 	go2test.AddStep("^Hello (.*)$", func()(int){return 0})
-	if step, _ := go2test.getStep("Hello Go2Test"); step == nil {
+	if step, _ := go2test.findStepAction("Hello Go2Test"); step == nil {
 		t.Fatalf("Saved step failed with regex")
 	}
-	if step, _ := go2test.getStep("Oh Hello Go2Test"); step != nil {
+	if step, _ := go2test.findStepAction("Oh Hello Go2Test"); step != nil {
 		t.Fatalf("Saved step failed with regex")
 	}
 }
