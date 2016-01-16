@@ -253,16 +253,22 @@ func (v *Go2Test) createFeature(path string) (*Feature, error) {
 	feature.Scenarios = make([]*Scenario, 0)
 	for _, s := range gFeature.ScenarioDefinitions {
 		gScenario, ok := s.(*ghk.Scenario)
-		var scenario *Scenario
+
 		if ok {
-			scenario, err = v.createScenario(gScenario)
+			scenario, err := v.createScenario(gScenario)
+			if err!= nil {
+				return nil, err
+			}
+			feature.Scenarios = append(feature.Scenarios, scenario)
 		} else {
-			s, err = v.createScenarioArray(s.(*ghk.ScenarioOutline))
+			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline))
+			if err!= nil {
+				return nil, err
+			}
+			for _, scenario := range scenarios {
+				feature.Scenarios = append(feature.Scenarios, scenario)
+			}
 		}
-		if err!= nil {
-			return nil, err
-		}
-		feature.Scenarios = append(feature.Scenarios, scenario)
 	}
 	return feature,nil
 }
@@ -315,7 +321,6 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario) (*Scenario, error) {
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
 func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline ) ([]*Scenario, error) {
-
 	scenarios := make([]*Scenario, 0)
 	for _, gExample := range gScenario.Examples {
 		for id, body := range gExample.TableBody {
@@ -323,7 +328,7 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline ) ([]*Scen
 			scenario.Name = gScenario.Name
 			scenario.Description = gScenario.Description
 			scenario.ExName = gExample.Name
-			scenario.Description = gExample.Description
+			scenario.ExDescription = gExample.Description
 			scenario.ExID = id
 			data := map[string]string{}
 			for i, cell := range body.Cells {
