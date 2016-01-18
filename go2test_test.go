@@ -76,3 +76,59 @@ func Test_004(t *testing.T) {
 		t.Fail()
 	}
 }
+
+
+func Test_005(t *testing.T) {
+	go2test := NewGo2Test()
+	go2test.AddStep(
+		"^Name(.*)$",
+		func(handle *Handle, name string) error {
+			fmt.Printf("Name: %s\n", name)
+			return nil
+		})
+	go2test.AddStep(
+		"^LineNum: (.*)$",
+		func(handle *Handle, nu interface{}) error {
+			fmt.Printf("Line: %d\n", nu.(int))
+			return nil
+		})
+	go2test.AddStep(
+		"^Name: (.*)$",
+		func(handle *Handle, name string) error {
+			fmt.Printf("Line: %d\n", name)
+			return nil
+		})
+	go2test.SetTags([]string{"@Tag1"})
+	go2test.SetFeaturesLocation("./examples/tags.*")
+	if err:=go2test.Run(); err!=nil{
+		t.Fail()
+	}
+}
+
+
+func Test_006(t *testing.T) {
+	go2test := NewGo2Test()
+	go2test.AddStep(
+		"^Name(.*)$",
+		func(handle *Handle, name string) error {
+			fmt.Printf("Name: %s\n", name)
+			return nil
+		})
+	go2test.AddStep(
+		"^LineNum: (.*)$",
+		func(handle *Handle, nu interface{}) error {
+			fmt.Printf("Line: %d\n", nu.(int))
+			return nil
+		})
+	go2test.AddStep(
+		"^Name: (.*)$",
+		func(handle *Handle, name string) error {
+			fmt.Printf("Line: %d\n", name)
+			return nil
+		})
+	go2test.SetTags([]string{"@Tag3"})
+	go2test.SetFeaturesLocation("./examples/tags.*")
+	if err:=go2test.Run(); err!=nil{
+		t.Fail()
+	}
+}

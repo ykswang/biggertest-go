@@ -14,6 +14,7 @@ import (
 
 const G2T_FEATURES = "@G2T_FEATURES"
 const G2T_STEPS = "@G2T_STEPS"
+const G2T_TAGS = "@G2T_TAGS"
 
 type Handle struct {
 	Buffer  map[string]interface{}
@@ -176,6 +177,12 @@ func (v *Go2Test) SetFeaturesLocation(path string) ([]string, error) {
 	return matches, err
 }
 
+
+func (v *Go2Test) SetTags(tags []string) {
+	v.SetOption(G2T_TAGS, tags)
+}
+
+
 // ----------------------------------------------------------------------------------
 // Add step into framework step libs
 // @param
@@ -226,7 +233,13 @@ func (v *Go2Test) findStepAction(step string) ([]string, *reflect.Value, error) 
 //    (*Feature) The Feature{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createFeature(path string) (*Feature, error) {
+func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
+
+	// fix nil
+	if tags == nil {
+		tags = []string{}
+	}
+
 	feature := new(Feature)
 
 	f, err := os.Open(path)
@@ -239,15 +252,27 @@ func (v *Go2Test) createFeature(path string) (*Feature, error) {
 		return nil, err
 	}
 
+	// Check Tags
+	// For feature, if tags is empty, will skip check
+	if gFeature.Tags != nil && len(gFeature.Tags) > 0 && len(tags) > 0 {
+		bOK := false
+		for _, gTag := range gFeature.Tags {
+			for _, tag := range tags {
+				if tag == gTag.Name {
+					bOK = true
+					break
+				}
+			}
+		}
+		if !bOK {
+			return nil, nil
+		}
+	}
+
+
 	// Description
 	feature.Description = gFeature.Description
 	feature.Name = gFeature.Name
-
-	// Tags
-	feature.Tags = make(map[string]interface{})
-	for _, tag := range gFeature.Tags {
-		feature.Tags[tag.Name] = make(map[string]interface{})
-	}
 
 	// Scenario
 	feature.Scenarios = make([]*Scenario, 0)
@@ -255,13 +280,15 @@ func (v *Go2Test) createFeature(path string) (*Feature, error) {
 		gScenario, ok := s.(*ghk.Scenario)
 
 		if ok {
-			scenario, err := v.createScenario(gScenario)
+			scenario, err := v.createScenario(gScenario, tags)
 			if err!= nil {
 				return nil, err
 			}
-			feature.Scenarios = append(feature.Scenarios, scenario)
+			if scenario != nil {
+				feature.Scenarios = append(feature.Scenarios, scenario)
+			}
 		} else {
-			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline))
+			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), tags)
 			if err!= nil {
 				return nil, err
 			}
@@ -282,8 +309,27 @@ func (v *Go2Test) createFeature(path string) (*Feature, error) {
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenario(gScenario *ghk.Scenario) (*Scenario, error) {
+func (v *Go2Test) createScenario(gScenario *ghk.Scenario, tags[] string) (*Scenario, error) {
 	scenario := new(Scenario)
+
+	// Check Tags
+	// For scenario, if gTags is empty and tags is not empty, is not allowed
+	if len(tags) > 0 {
+		bOK := false
+		if gScenario.Tags != nil && len(gScenario.Tags) > 0 {
+			for _, gTag := range gScenario.Tags {
+				for _, tag := range tags {
+					if tag == gTag.Name {
+						bOK = true
+						break
+					}
+				}
+			}
+		}
+		if !bOK {
+			return nil, nil
+		}
+	}
 
 	// Description
 	scenario.Name = gScenario.Name
@@ -291,12 +337,6 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario) (*Scenario, error) {
 
 	// No Examples
 	scenario.ExID = -1
-
-	// Tags
-	scenario.Tags = make(map[string]interface{})
-	for _, tag := range gScenario.Tags {
-		scenario.Tags[tag.Name] = make(map[string]interface{})
-	}
 
 	// Step
 	scenario.Steps = make([]*Step, 0)
@@ -320,8 +360,30 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario) (*Scenario, error) {
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline ) ([]*Scenario, error) {
+func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, tags[] string) ([]*Scenario, error) {
 	scenarios := make([]*Scenario, 0)
+
+	// Check Tags
+	// Check Tags
+	// For scenario, if gTags is empty and tags is not empty, is not allowed
+	if len(tags) > 0 {
+		bOK := false
+		if gScenario.Tags != nil && len(gScenario.Tags) > 0 {
+			for _, gTag := range gScenario.Tags {
+				for _, tag := range tags {
+					if tag == gTag.Name {
+						bOK = true
+						break
+					}
+				}
+			}
+		}
+		if !bOK {
+			return nil, nil
+		}
+	}
+
+
 	for _, gExample := range gScenario.Examples {
 		for id, body := range gExample.TableBody {
 			scenario := new(Scenario)
@@ -418,13 +480,20 @@ func (v *Go2Test) Run() (error) {
 		return errors.New("go2test:{\"message\":\"Please call SetFeaturesLocation before Run !\"}")
 	}
 
+	tags, ok := v.GetOption(G2T_TAGS)
+	if !ok {
+		tags = []string{}
+	}
+
 	features := make([]*Feature, 0)
 	for _, path := range paths.([]string) {
-		feature, err := v.createFeature(path)
+		feature, err := v.createFeature(path, tags.([]string))
 		if err != nil {
 			return err
 		}
-		features = append(features, feature)
+		if feature != nil {
+			features = append(features, feature)
+		}
 	}
 
 	for _, feature := range features {
