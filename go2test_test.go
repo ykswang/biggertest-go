@@ -132,3 +132,18 @@ func Test_006(t *testing.T) {
 		t.Fail()
 	}
 }
+
+
+func Test_007(t *testing.T) {
+	go2test := NewGo2Test()
+	go2test.AddStep(
+		"^Name(.*)$",
+		func(handle *Handle, name string) error {
+			fmt.Printf("Name: %s\n", name)
+			return nil
+		})
+	go2test.SetFeaturesLocation("./examples/background.*")
+	if err:=go2test.Run(); err!=nil{
+		t.Fail()
+	}
+}

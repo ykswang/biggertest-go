@@ -77,7 +77,7 @@ func (v *Scenario) Run() {
 		if err != nil {
 			panic(err)
 		} else {
-			fmt.Printf("[ PASS ] %s", step.Text)
+			fmt.Printf("[ PASS ] %s\n", step.Text)
 			v.run_idx += 1
 		}
 	}
@@ -274,13 +274,19 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 	feature.Description = gFeature.Description
 	feature.Name = gFeature.Name
 
+	// Background
+	gBgSteps := []*ghk.Step{}
+	if gFeature.Background != nil {
+		gBgSteps = gFeature.Background.Steps
+	}
+
 	// Scenario
 	feature.Scenarios = make([]*Scenario, 0)
 	for _, s := range gFeature.ScenarioDefinitions {
 		gScenario, ok := s.(*ghk.Scenario)
 
 		if ok {
-			scenario, err := v.createScenario(gScenario, tags)
+			scenario, err := v.createScenario(gScenario, gBgSteps, tags)
 			if err!= nil {
 				return nil, err
 			}
@@ -288,7 +294,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		} else {
-			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), tags)
+			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), gBgSteps, tags)
 			if err!= nil {
 				return nil, err
 			}
@@ -309,7 +315,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenario(gScenario *ghk.Scenario, tags[] string) (*Scenario, error) {
+func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, tags[] string) (*Scenario, error) {
 	scenario := new(Scenario)
 
 	// Check Tags
@@ -340,6 +346,15 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, tags[] string) (*Scena
 
 	// Step
 	scenario.Steps = make([]*Step, 0)
+
+	for _, gStep := range bgSteps {
+		step, err := v.createStep(gStep, map[string]string{})
+		if err != nil {
+			return nil, err
+		}
+		scenario.Steps = append(scenario.Steps, step)
+	}
+
 	for _, gStep := range gScenario.Steps {
 		step, err := v.createStep(gStep, map[string]string{})
 		if err != nil {
@@ -360,7 +375,7 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, tags[] string) (*Scena
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, tags[] string) ([]*Scenario, error) {
+func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps []*ghk.Step, tags[] string) ([]*Scenario, error) {
 	scenarios := make([]*Scenario, 0)
 
 	// Check Tags
@@ -397,6 +412,13 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, tags[] st
 				data[gExample.TableHeader.Cells[i].Value] = cell.Value
 			}
 			scenario.Steps = make([]*Step, 0)
+			for _, gStep := range bgSteps {
+				step, err := v.createStep(gStep, map[string]string{})
+				if err != nil {
+					return nil, err
+				}
+				scenario.Steps = append(scenario.Steps, step)
+			}
 			for _, gStep := range gScenario.Steps {
 				step, err := v.createStep(gStep, data)
 				if err != nil {
