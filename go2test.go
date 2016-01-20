@@ -9,212 +9,339 @@ import (
 	ghk "github.com/cucumber/gherkin-go"
 	"strings"
 	"fmt"
+	"runtime"
 )
 
+
+const SUB_FEA = ""
+const SUB_SCE = "  "
+const SUB_STE = "    "
 
 const G2T_FEATURES = "@G2T_FEATURES"
 const G2T_STEPS = "@G2T_STEPS"
 const G2T_TAGS = "@G2T_TAGS"
 
-type Handle struct {
-	Buffer  map[string]interface{}
+const G2T_STATUS_WAIT = 0
+const G2T_STATUS_PASS = 1
+const G2T_STATUS_FAIL = 2
+const G2T_STATUS_SKIP = 3
+
+const STR_INVALID_INIT_GO2TEST = "Please Call New2Go2Test() to create instance !!!"
+const STR_INVALID_STEP_TEXT = "Invalid step string [%s]"
+
+// ----------------------------------------------------------------------------------
+// @name: Exception
+// Standard Error format for Go2Test Framework
+// @values
+//    - Feature: Error Feature
+//    - Scenario: Error Scenario
+//    - Step: Error Step
+//    - Message: Error Message
+//    - Stack: StaceTrace of call tree
+// ----------------------------------------------------------------------------------
+type Exception struct {
+	Feature    *Feature
+	Scenario   *Scenario
+	Step       *Step
+	Message    string
+	Stack      string
 }
 
 
+// ----------------------------------------------------------------------------------
+// @name: Handle
+//   * Data bridge
+//   * Common API
+// @params:
+//     - Buffer: Data buffer
+// ----------------------------------------------------------------------------------
+type Handle struct {
+	Buffer       map[string]interface{}
+	Feature      *Feature
+	Scenario     *Scenario
+	Step         *Step
+}
+
+// Clean the handle
+func (v Handle) clean() {
+	v.Buffer = make(map[string]interface{})
+	v.Feature = nil
+	v.Scenario = nil
+	v.Step = nil
+}
+
+// Create an *Exception and panic it
+// @params:
+//    message: Error message
+func (v *Handle) ThrowException(message string) {
+	panic(v.NewException(message))
+}
+
+
+// Create an *Exception
+// @params:
+//    message: Error message
+// @returns:
+//    (*Exception): New *Exception, you can panic it by yourself
+func (v *Handle) NewException(message string) *Exception {
+	e := new(Exception)
+	e.Scenario = v.Scenario
+	e.Feature = v.Feature
+	e.Step = v.Step
+	e.Message = message
+
+	bufStack := make([]byte, 1<<16)
+	num := runtime.Stack(bufStack, true)
+	e.Stack = string(bufStack[0:num])
+	return e
+}
+
+
+// ----------------------------------------------------------------------------------
+// @name: Step
+// If step failed, framework will skip the remaining steps which belong the same scenario
+// @returns:
+//     Id: The order ID
+//     Text: Statement of step, teh statement must cloud be matched by regex in step libs
+//     Action: The callback
+//     Params: Params pass to callback
+//     Status: Result WAIT|PASS|FAIL|SKIP
+// ----------------------------------------------------------------------------------
 type Step struct {
+	Id           int
 	Text         string
 	Action       reflect.Value
 	Params       []reflect.Value
+	Status       int
 }
 
-func (v *Step) Run() (error) {
-	results := v.Action.Call(v.Params)
-	if results[0].Interface() == nil {
-		return nil
-	} else {
-		return results[0].Interface().(error)
+// Do the step, run step's action with params
+// Step itself does not need to ensure that there is no error or panic, so it do not maintain the exception message
+// @Params:
+//    handle: *Handle, it's created by Go2Test
+func (v *Step) Run(handle *Handle) {
+
+	defer func(){
+		if err:=recover(); err!=nil {
+			name := reflect.TypeOf(err).Name()
+			var exception *Exception
+			if name != "*Exception" {
+				exception = handle.NewException(fmt.Sprintf("%v+", err))
+			} else {
+				exception = err.(*Exception)
+			}
+			fmt.Printf("%s [FAIL] %s\n", SUB_STE, exception.Step.Text)
+			fmt.Printf("%s        %s\n", SUB_STE, exception.Message)
+			fmt.Printf("%s        %s\n", SUB_STE, exception.Stack)
+			v.Status = G2T_STATUS_FAIL
+			panic(exception)
+		}
+	}()
+
+	handle.Step = v
+
+	// rebuild the params with handle in the first
+	params := make([]reflect.Value, len(v.Params)+1)
+	params[0] = reflect.ValueOf(handle)
+	for id, p := range v.Params {
+		params[id+1]=p
 	}
+
+	// Step will ignore the action's return
+	v.Action.Call(params)
+	fmt.Printf("%s [ PASS ] %s\n", SUB_FEA, v.Text)
+	v.Status = G2T_STATUS_PASS
+}
+
+// Skip the step, not run it
+func (v *Step) Skip() {
+	v.Status = G2T_STATUS_SKIP
+	fmt.Printf("%s [ SKIP ] %s\n", SUB_FEA, v.Text)
 }
 
 
+// ----------------------------------------------------------------------------------
+// @name: Scenario
+// Groups of Steps
+// @params:
+//     Id: The order ID
+//     Name: The name of Scenario
+//     Description: The Description of Scenario
+//     Steps: All Steps need to run(contains background)
+//     Status: Result WAIT|PASS|FAIL
+// ----------------------------------------------------------------------------------
 type Scenario struct {
+	Id              int
 	Name            string
 	Description     string
-	Tags            map[string]interface{}
 	Steps           []*Step
-	ExName          string
-	ExDescription   string
-	ExID            int
-
-	run_idx         int
+	Status          int
 }
 
-
-func (v *Scenario) Run() {
+// Run Scenario
+// Scenario has defer, handle the panic
+// @params:
+//    handle: *Handle, it's created by Go2Test
+func (v *Scenario) Run(handle *Handle) {
 
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Print("----\n")
-			fmt.Print(err)
-			fmt.Print("\n----\n")
-			fmt.Printf("[ FAIL ] %s\n", v.Steps[v.run_idx].Text)
-			for _, step := range v.Steps[v.run_idx+1:] {
-				fmt.Printf("[ SKIP ] %s\n", step.Text)
+			v.Status = G2T_STATUS_FAIL
+			exception := err.(*Exception)
+			for _, step := range v.Steps[exception.Step.Id+1:] {
+				step.Skip()
 			}
 		}
-
 	}()
 
-	v.run_idx = 0
-	if v.ExID != -1 {
-		fmt.Printf("Scenario %s -- %s -- %d\n", v.Name, v.ExName, v.ExID)
-	} else {
-		fmt.Printf("Scenario %s\n", v.Name)
-	}
+	handle.Scenario = v
+
+	fmt.Printf("%s Scenario: %s\n", SUB_SCE, v.Name)
 
 	for _, step := range v.Steps {
-		err := step.Run()
-		if err != nil {
-			panic(err)
-		} else {
-			fmt.Printf("[ PASS ] %s\n", step.Text)
-			v.run_idx += 1
-		}
+		step.Run(handle)
 	}
+	v.Status = G2T_STATUS_PASS
 }
 
 
+// ----------------------------------------------------------------------------------
+// @name: Feature
+// Scenario groups
+// @params:
+//     Name: The feature's name
+//     Description: The feature's description
+//     Scenarios: All scenarios need to run(contains background)
+//     Status: Result WAIT|PASS|FAIL
+// ----------------------------------------------------------------------------------
 type Feature struct {
 	Name         string
 	Scenarios    []*Scenario
 	Description  string
-	Tags         map[string]interface{}
+	Status       int
 }
 
-func (v *Feature) Run() {
-
+// Do the Feature
+// @params:
+//    handle: *Handle, it's created by Go2Test
+func (v *Feature) Run(handle *Handle) {
 	fmt.Printf("Feature %s\n", v.Name)
+	v.Status = G2T_STATUS_PASS
+	handle.Feature = v
 	for _, scenario := range v.Scenarios {
-		scenario.Run()
+		scenario.Run(handle)
+		if scenario.Status == G2T_STATUS_FAIL {
+			v.Status = G2T_STATUS_FAIL
+		}
 	}
 }
 
 
 // ----------------------------------------------------------------------------------
-// The core struct of the framework
-// Please use NewGo2Test() to create instance
+// @name: Go2Test
+// The main framework
+// Please use NewGo2Test() to create new *Go2Test
 // ----------------------------------------------------------------------------------
 type Go2Test struct {
 	options  map[string]interface{}   // properties for the struct
 	handle   *Handle
 }
 
-
-// -------------------------------------------------------------------------------------------------------------
-// Create a instance of Go2Test
-// @return
-//    (*Go2Test):  Instance of Go2Test
-// -------------------------------------------------------------------------------------------------------------
+// Create new *Go2Test and init it
+// @returns:
+//    (*Go2Test): new *Go2Test
 func NewGo2Test() (*Go2Test){
 	v := new(Go2Test)
 	v.options = make(map[string]interface{})
-	v.SetOption(G2T_STEPS, make(map[*regexp.Regexp]reflect.Value))
+	v.setOption(G2T_STEPS, make(map[*regexp.Regexp]reflect.Value))
 	v.handle = new(Handle)
 	v.handle.Buffer = make(map[string]interface{})
 	return v
 }
 
-
-// ----------------------------------------------------------------------------------
-// Set the option value
-// @param
-//     key : (string) option's name
-//     value : (interface{}) option's value
-// @return
-//     (interface{}): if the key is already existed, will return an old value.
-//     (bool): is a replace action
-// ----------------------------------------------------------------------------------
-func (v *Go2Test) SetOption(key string, value interface{}) (interface{}, bool) {
+// Set property
+// @params:
+//     key : property's name
+//     value : property's value
+// @returns:
+//     (interface{}): if the key is already saved before, will return the old value
+//     (bool): is have returned an old value
+func (v *Go2Test) setOption(key string, value interface{}) (interface{}, bool) {
 	oldVal, ok := v.options[key]
 	v.options[key] = value
 	return oldVal, ok
 }
 
 
-// ----------------------------------------------------------------------------------
-// Get the option value
-// @param
-//     key : (string) option's name
-//
-// @return
-//     (interface{}): value
-//     (bool): is the key existed
-// ----------------------------------------------------------------------------------
-func (v *Go2Test) GetOption(key string) (interface{}, bool) {
+// Get property
+// @params:
+//     key : property's name
+// @returns:
+//     (interface{}): property's value
+//     (bool): if the key is valid
+func (v *Go2Test) getOption(key string) (interface{}, bool) {
 	val, ok := v.options[key]
 	return val, ok
 }
 
 
-// ----------------------------------------------------------------------------------
-// Set the *.feature files location.
-// @param:
-//    path: (string) the file path, such as
-//          Examples:
+// Set the location of feature files
+// @params:
+//    path: the location
+//          ex:
 //          =========
 //          /root/features,
 //          /root/features/sample.feature,
 //          /root/features/sampel_*.feature
-// @return
-//    ([]string): file list which founded in path
-//    (error): error with JSON {"msg":"", method: "Go2Test.SetFeaturesLocation"}
-// ----------------------------------------------------------------------------------
+// @returns:
+//    ([]string): the feature list which founded in the path
+//    (error): error message
 func (v *Go2Test) SetFeaturesLocation(path string) ([]string, error) {
 	matches, err := filepath.Glob(path)
 	if err == nil {
-		v.SetOption(G2T_FEATURES, matches)
+		v.setOption(G2T_FEATURES, matches)
 	}
 	return matches, err
 }
 
-
+// Config the running tags
+// @params
+//     tags: the tag array, help user to filter the features and scenarios
 func (v *Go2Test) SetTags(tags []string) {
-	v.SetOption(G2T_TAGS, tags)
+	v.setOption(G2T_TAGS, tags)
 }
 
 
-// ----------------------------------------------------------------------------------
-// Add step into framework step libs
-// @param
-//    reg: (string) describe step content with regular expressions
-//    callback: (interface{}) the step function
-// ----------------------------------------------------------------------------------
+// Add steps
+// @params:
+//    reg: the regex
+//    callback: the action
+// @returns:
+//    (error): Errors
 func (v *Go2Test) AddStep(reg string, callback interface{}) error {
 	key, err := regexp.Compile(reg)
 	if err != nil {
 		return err
 	}
 	val := reflect.ValueOf(callback)
-	steps, ok := v.GetOption(G2T_STEPS)
+	steps, ok := v.getOption(G2T_STEPS)
 	if !ok {
-		return errors.New("Please Call New2Go2Test() to create instance !!!")
+		return errors.New(STR_INVALID_INIT_GO2TEST)
 	}
 	steps.(map[*regexp.Regexp]reflect.Value)[key]=val
 	return nil
 }
 
 
-// ----------------------------------------------------------------------------------
-// Get step callback by step content
-// @param
-//    step: (string) step content
-// @return
-//    (*reflect.Value) callback with reflect type
-// ----------------------------------------------------------------------------------
+// Find matched action
+// @params:
+//    step: step's text
+// @returns:
+//    (*reflect.Value) the step action
 func (v *Go2Test) findStepAction(step string) ([]string, *reflect.Value, error) {
-	steps, ok := v.GetOption(G2T_STEPS)
+	steps, ok := v.getOption(G2T_STEPS)
 	if !ok {
-		return nil, nil, errors.New("Please Call New2Go2Test() to create instance !!!")
+		return nil, nil, errors.New(STR_INVALID_INIT_GO2TEST)
 	}
 	for reg, callback := range steps.(map[*regexp.Regexp]reflect.Value) {
 		keywords := reg.FindStringSubmatch(step)
@@ -222,20 +349,17 @@ func (v *Go2Test) findStepAction(step string) ([]string, *reflect.Value, error) 
 			return keywords, &callback, nil
 		}
 	}
-	return nil, nil, errors.New("Invalid step string [" + step + "]")
+	return nil, nil, errors.New(fmt.Sprintf(STR_INVALID_STEP_TEXT, step))
 }
 
-// ----------------------------------------------------------------------------------
-// Create Feature form *.feature file
-// @param
-//    path: (string) feature's path
-// @return
-//    (*Feature) The Feature{} instance
-//    (error) if anything failed
-// ----------------------------------------------------------------------------------
+// read *.feature to create new *Feature
+// @params:
+//    path: the path of *.feature
+// @returns
+//    (*Feature) new *Feature
+//    (error) Error
 func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 
-	// fix nil
 	if tags == nil {
 		tags = []string{}
 	}
@@ -252,8 +376,6 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 		return nil, err
 	}
 
-	// Check Tags
-	// For feature, if tags is empty, will skip check
 	if gFeature.Tags != nil && len(gFeature.Tags) > 0 && len(tags) > 0 {
 		bOK := false
 		for _, gTag := range gFeature.Tags {
@@ -291,6 +413,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				return nil, err
 			}
 			if scenario != nil {
+				scenario.Id = len(feature.Scenarios)
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		} else {
@@ -299,6 +422,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				return nil, err
 			}
 			for _, scenario := range scenarios {
+				scenario.Id = len(feature.Scenarios)
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		}
@@ -307,19 +431,15 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 }
 
 
-// ----------------------------------------------------------------------------------
-// Create *Scenario form *ghk.Scenario
-// @param
-//    gScenario: (*ghk.Scenario) The instance of *ghk.Scenario
-// @return
-//    (*Scenario) The Scenario{} instance
-//    (error) if anything failed
-// ----------------------------------------------------------------------------------
+// Create new *Scenario
+// @params:
+//    gScenario: ghk.Scenario
+// @returns:
+//    (*Scenario) new *Scenario
+//    (error) errors
 func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, tags[] string) (*Scenario, error) {
 	scenario := new(Scenario)
 
-	// Check Tags
-	// For scenario, if gTags is empty and tags is not empty, is not allowed
 	if len(tags) > 0 {
 		bOK := false
 		if gScenario.Tags != nil && len(gScenario.Tags) > 0 {
@@ -341,9 +461,6 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, t
 	scenario.Name = gScenario.Name
 	scenario.Description = gScenario.Description
 
-	// No Examples
-	scenario.ExID = -1
-
 	// Step
 	scenario.Steps = make([]*Step, 0)
 
@@ -352,6 +469,7 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, t
 		if err != nil {
 			return nil, err
 		}
+		step.Id = len(scenario.Steps)
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
@@ -360,6 +478,7 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, t
 		if err != nil {
 			return nil, err
 		}
+		step.Id = len(scenario.Steps)
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
@@ -402,11 +521,8 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps [
 	for _, gExample := range gScenario.Examples {
 		for id, body := range gExample.TableBody {
 			scenario := new(Scenario)
-			scenario.Name = gScenario.Name
+			scenario.Name = gScenario.Name + " | " + gExample.Name + " | " + string(id)
 			scenario.Description = gScenario.Description
-			scenario.ExName = gExample.Name
-			scenario.ExDescription = gExample.Description
-			scenario.ExID = id
 			data := map[string]string{}
 			for i, cell := range body.Cells {
 				data[gExample.TableHeader.Cells[i].Value] = cell.Value
@@ -446,7 +562,6 @@ func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Ste
 	step := new(Step)
 	step.Text = gStep.Text
 	step.Params = make([]reflect.Value, 0)
-	step.Params = append(step.Params, reflect.ValueOf(v.handle))
 
 	// update step text with example data
 	for key, val := range example {
@@ -497,12 +612,12 @@ func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Ste
 
 func (v *Go2Test) Run() (error) {
 
-	paths, ok := v.GetOption(G2T_FEATURES)
+	paths, ok := v.getOption(G2T_FEATURES)
 	if !ok {
-		return errors.New("go2test:{\"message\":\"Please call SetFeaturesLocation before Run !\"}")
+		return errors.New("Please call SetFeaturesLocation before Run")
 	}
 
-	tags, ok := v.GetOption(G2T_TAGS)
+	tags, ok := v.getOption(G2T_TAGS)
 	if !ok {
 		tags = []string{}
 	}
@@ -519,7 +634,7 @@ func (v *Go2Test) Run() (error) {
 	}
 
 	for _, feature := range features {
-		feature.Run()
+		feature.Run(v.handle)
 	}
 
 	return nil
