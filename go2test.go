@@ -402,13 +402,79 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 		gBgSteps = gFeature.Background.Steps
 	}
 
-	// Scenario
-	feature.Scenarios = make([]*Scenario, 0)
+	// Find Hooks
+	// Hook is a special which make its name started with @before or @after
+	// Example:
+	// Scenario: @before/^(/*)$  match all scenarios
+	// Scenario: @before/^(.*)stg(.*)$  match all scenarios contains "stg" in its name
+	hook_before := make(map[*regexp.Regexp]*ghk.Scenario)
+	hook_after := make(map[*regexp.Regexp]*ghk.Scenario)
+	normal_sce := make([]interface{}, 0)
+
 	for _, s := range gFeature.ScenarioDefinitions {
 		gScenario, ok := s.(*ghk.Scenario)
+		if !ok {
+			// Hook Scenario must not be ScenarioOutline
+			normal_sce = append(normal_sce, s)
+		}
+
+		sName := strings.TrimSpace(gScenario.Name)
+		if strings.Contains(sName, "/") && strings.Contains(sName, "@"){
+			params := strings.SplitN(sName, "/", 2)
+			key := strings.TrimSpace(params[0])
+			switch strings.ToLower(key) {
+			case "@before":
+				reg, err:= regexp.Compile(strings.TrimSpace(params[1]))
+				if err != nil {
+					return nil, err
+				}
+				hook_before[reg] = gScenario
+			case "@after":
+				reg, err:= regexp.Compile(strings.TrimSpace(params[1]))
+				if err != nil {
+					return nil, err
+				}
+				hook_after[reg] = gScenario
+			default:
+				normal_sce = append(normal_sce, s)
+			}
+		} else {
+			normal_sce = append(normal_sce, s)
+		}
+	}
+
+	// Scenario
+	feature.Scenarios = make([]*Scenario, 0)
+	for _, s := range normal_sce {
+		gScenario, ok := s.(*ghk.Scenario)
+
+		hook_b := make([]*ghk.Step, 0)
+		hook_a := make([]*ghk.Step, 0)
 
 		if ok {
-			scenario, err := v.createScenario(gScenario, gBgSteps, tags)
+			// Search matched before hook
+			for reg, sce := range hook_before {
+				keywords := reg.FindStringSubmatch(strings.TrimSpace(gScenario.Name))
+				if len(keywords) != 0 {
+					if len(hook_b) != 0 {
+						return nil, errors.New("Scenario matched muti before hooks")
+					} else {
+						hook_b = sce.Steps
+					}
+				}
+			}
+			// Search matched after hook
+			for reg, sce := range hook_after {
+				keywords := reg.FindStringSubmatch(strings.TrimSpace(gScenario.Name))
+				if len(keywords) != 0 {
+					if  len(hook_a) != 0 {
+						return nil, errors.New("Scenario matched muti after hooks")
+					} else {
+						hook_a = sce.Steps
+					}
+				}
+			}
+			scenario, err := v.createScenario(gScenario, gBgSteps, hook_b, hook_a, tags)
 			if err!= nil {
 				return nil, err
 			}
@@ -417,7 +483,30 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		} else {
-			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), gBgSteps, tags)
+			// Search matched before hook
+			for reg, sce := range hook_before {
+				keywords := reg.FindStringSubmatch(strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
+				if len(keywords) != 0 {
+					if hook_b != nil {
+						return nil, errors.New("Scenario matched muti before hooks")
+					} else {
+						hook_b = sce.Steps
+					}
+				}
+			}
+
+			// Search matched after hook
+			for reg, sce := range hook_after {
+				keywords := reg.FindStringSubmatch(strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
+				if len(keywords) != 0 {
+					if hook_a != nil {
+						return nil, errors.New("Scenario matched muti after hooks")
+					} else {
+						hook_a = sce.Steps
+					}
+				}
+			}
+			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), gBgSteps, hook_b, hook_a, tags)
 			if err!= nil {
 				return nil, err
 			}
@@ -426,6 +515,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		}
+
 	}
 	return feature,nil
 }
@@ -437,7 +527,7 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 // @returns:
 //    (*Scenario) new *Scenario
 //    (error) errors
-func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, tags[] string) (*Scenario, error) {
+func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string) (*Scenario, error) {
 	scenario := new(Scenario)
 
 	if len(tags) > 0 {
@@ -473,7 +563,25 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, t
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
+	for _, gStep := range hook_b {
+		step, err := v.createStep(gStep, map[string]string{})
+		if err != nil {
+			return nil, err
+		}
+		step.Id = len(scenario.Steps)
+		scenario.Steps = append(scenario.Steps, step)
+	}
+
 	for _, gStep := range gScenario.Steps {
+		step, err := v.createStep(gStep, map[string]string{})
+		if err != nil {
+			return nil, err
+		}
+		step.Id = len(scenario.Steps)
+		scenario.Steps = append(scenario.Steps, step)
+	}
+
+	for _, gStep := range hook_a {
 		step, err := v.createStep(gStep, map[string]string{})
 		if err != nil {
 			return nil, err
@@ -494,7 +602,7 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, t
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps []*ghk.Step, tags[] string) ([]*Scenario, error) {
+func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps []*ghk.Step, hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string) ([]*Scenario, error) {
 	scenarios := make([]*Scenario, 0)
 
 	// Check Tags
@@ -535,6 +643,16 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps [
 				}
 				scenario.Steps = append(scenario.Steps, step)
 			}
+
+			for _, gStep := range hook_b {
+				step, err := v.createStep(gStep, map[string]string{})
+				if err != nil {
+					return nil, err
+				}
+				step.Id = len(scenario.Steps)
+				scenario.Steps = append(scenario.Steps, step)
+			}
+
 			for _, gStep := range gScenario.Steps {
 				step, err := v.createStep(gStep, data)
 				if err != nil {
@@ -542,6 +660,16 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps [
 				}
 				scenario.Steps = append(scenario.Steps, step)
 			}
+
+			for _, gStep := range hook_a {
+				step, err := v.createStep(gStep, map[string]string{})
+				if err != nil {
+					return nil, err
+				}
+				step.Id = len(scenario.Steps)
+				scenario.Steps = append(scenario.Steps, step)
+			}
+
 			scenarios = append(scenarios, scenario)
 		}
 	}
@@ -639,6 +767,5 @@ func (v *Go2Test) Run() (error) {
 
 	return nil
 }
-
 
 
