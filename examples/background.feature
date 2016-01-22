@@ -8,3 +8,7 @@ Feature: BG
 
   Scenario: Scenario2
     Given Name Scenario2
+    Then  Failed
+    Given Name ScenarioA
+    Given Name ScenarioB
+    Given Name ScenarioC

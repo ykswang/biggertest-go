@@ -1,33 +1,25 @@
 package go2test
+
 import (
+	"os"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"errors"
-	"os"
+	"strings"
+	"runtime"
+	"strconv"
 
 	ghk "github.com/cucumber/gherkin-go"
-	"strings"
-	"fmt"
-	"runtime"
+	log "github.com/Sirupsen/logrus"
+	"sort"
 )
-
-
-const SUB_FEA = ""
-const SUB_SCE = "  "
-const SUB_STE = "    "
-
-const G2T_FEATURES = "@G2T_FEATURES"
-const G2T_STEPS = "@G2T_STEPS"
-const G2T_TAGS = "@G2T_TAGS"
 
 const G2T_STATUS_WAIT = 0
 const G2T_STATUS_PASS = 1
 const G2T_STATUS_FAIL = 2
 const G2T_STATUS_SKIP = 3
 
-const STR_INVALID_INIT_GO2TEST = "Please Call New2Go2Test() to create instance !!!"
-const STR_INVALID_STEP_TEXT = "Invalid step string [%s]"
 
 // ----------------------------------------------------------------------------------
 // @name: Exception
@@ -73,8 +65,8 @@ func (v Handle) clean() {
 // Create an *Exception and panic it
 // @params:
 //    message: Error message
-func (v *Handle) ThrowException(message string) {
-	panic(v.NewException(message))
+func (v *Handle) ThrowException(format string, a ...interface{}) {
+	panic(v.NewException(format, a ...))
 }
 
 
@@ -83,12 +75,12 @@ func (v *Handle) ThrowException(message string) {
 //    message: Error message
 // @returns:
 //    (*Exception): New *Exception, you can panic it by yourself
-func (v *Handle) NewException(message string) *Exception {
+func (v *Handle) NewException(format string, a ...interface{}) *Exception {
 	e := new(Exception)
 	e.Scenario = v.Scenario
 	e.Feature = v.Feature
 	e.Step = v.Step
-	e.Message = message
+	e.Message = fmt.Sprintf(format, a ...)
 
 	bufStack := make([]byte, 1<<16)
 	num := runtime.Stack(bufStack, true)
@@ -130,15 +122,21 @@ func (v *Step) Run(handle *Handle) {
 			} else {
 				exception = err.(*Exception)
 			}
-			fmt.Printf("%s [FAIL] %s\n", SUB_STE, exception.Step.Text)
-			fmt.Printf("%s        %s\n", SUB_STE, exception.Message)
-			fmt.Printf("%s        %s\n", SUB_STE, exception.Stack)
+			log.Errorf(" ")
+			log.Errorf("|    FAIL!!!")
+			log.Errorf("|    %s", exception.Message)
+			msgs := strings.Split(exception.Stack, "\n")
+			for _, msg := range msgs {
+				log.Errorf("|    %s ", msg)
+			}
+			log.Errorf(" ")
 			v.Status = G2T_STATUS_FAIL
 			panic(exception)
 		}
 	}()
 
 	handle.Step = v
+	log.Infof("[STEP] %s", v.Text)
 
 	// rebuild the params with handle in the first
 	params := make([]reflect.Value, len(v.Params)+1)
@@ -149,14 +147,13 @@ func (v *Step) Run(handle *Handle) {
 
 	// Step will ignore the action's return
 	v.Action.Call(params)
-	fmt.Printf("%s [ PASS ] %s\n", SUB_FEA, v.Text)
 	v.Status = G2T_STATUS_PASS
 }
 
 // Skip the step, not run it
 func (v *Step) Skip() {
 	v.Status = G2T_STATUS_SKIP
-	fmt.Printf("%s [ SKIP ] %s\n", SUB_FEA, v.Text)
+	log.Infof("[ SKIP ] %s", v.Text)
 }
 
 
@@ -196,12 +193,80 @@ func (v *Scenario) Run(handle *Handle) {
 
 	handle.Scenario = v
 
-	fmt.Printf("%s Scenario: %s\n", SUB_SCE, v.Name)
+	log.Infof(" ")
+	log.Infof("----------------------------------------")
+	log.Infof("%s.%s", handle.Feature.Name, v.Name)
+	log.Infof("----------------------------------------")
 
 	for _, step := range v.Steps {
 		step.Run(handle)
 	}
 	v.Status = G2T_STATUS_PASS
+}
+
+type Hook struct {
+	key       string
+	Priority  int
+	Steps     []*ghk.Step
+	Regex     *regexp.Regexp
+}
+
+func CreateHook(handle *Handle, gScenario *ghk.Scenario) (*Hook, *Exception) {
+	hook := new(Hook)
+	sName := strings.TrimSpace(gScenario.Name)
+
+	checker, _ := regexp.Compile("@(.+)/(.+)")
+	matched := checker.FindStringSubmatch(sName)
+	if len(matched) != 0 {
+		head := strings.TrimSpace(matched[1])
+		body := strings.TrimSpace(matched[2])
+		var key string
+		var priority int
+		var err error
+		if strings.Contains(head, "(") && strings.Contains(head, ")") {
+			head_checker, _ := regexp.Compile("(.+)\\((.+)\\)")
+			head_matched := head_checker.FindStringSubmatch(head)
+			if len(head_matched) != 3 {
+				return nil, handle.NewException(fmt.Sprintf("Invalid Hook title [%s]", sName))
+			}
+			key = strings.ToLower(strings.TrimSpace(head_matched[1]))
+			priority, err = strconv.Atoi(strings.TrimSpace(head_matched[2]))
+			if err != nil {
+				return nil, handle.NewException(fmt.Sprintf("Invalid Hook title [%s]: %s", sName, err.Error()))
+			}
+		} else {
+			key = strings.ToLower(head)
+			priority = 0
+		}
+		hook_checker, err := regexp.Compile(body)
+		if err != nil {
+			return nil, handle.NewException(fmt.Sprintf("Invalid Hook title [%s]: %s", sName, err.Error()))
+		}
+		hook.Regex = hook_checker
+		hook.Steps = gScenario.Steps
+		hook.key = key
+		hook.Priority = priority
+		return hook, nil
+	} else {
+		return nil, nil
+	}
+}
+
+// ------------------------------------------------------
+// Let []*Hook Support sort
+// ------------------------------------------------------
+type HookList []*Hook
+
+func (v HookList) Len() int {
+	return len(v)
+}
+
+func (v HookList) Swap(i, j int) {
+	v[i], v[j] = v[j], v[i]
+}
+
+func (v HookList) Less(i, j int) bool {
+	return v[i].Priority < v[j].Priority
 }
 
 
@@ -225,7 +290,6 @@ type Feature struct {
 // @params:
 //    handle: *Handle, it's created by Go2Test
 func (v *Feature) Run(handle *Handle) {
-	fmt.Printf("Feature %s\n", v.Name)
 	v.Status = G2T_STATUS_PASS
 	handle.Feature = v
 	for _, scenario := range v.Scenarios {
@@ -243,92 +307,34 @@ func (v *Feature) Run(handle *Handle) {
 // Please use NewGo2Test() to create new *Go2Test
 // ----------------------------------------------------------------------------------
 type Go2Test struct {
-	options  map[string]interface{}   // properties for the struct
-	handle   *Handle
+	handle      *Handle
+	actions     map[*regexp.Regexp]reflect.Value
 }
 
 // Create new *Go2Test and init it
 // @returns:
 //    (*Go2Test): new *Go2Test
-func NewGo2Test() (*Go2Test){
+func NewGo2Test() (*Go2Test) {
 	v := new(Go2Test)
-	v.options = make(map[string]interface{})
-	v.setOption(G2T_STEPS, make(map[*regexp.Regexp]reflect.Value))
+	v.actions = make(map[*regexp.Regexp]reflect.Value)
 	v.handle = new(Handle)
 	v.handle.Buffer = make(map[string]interface{})
 	return v
 }
 
-// Set property
+
+// Add regex && action
 // @params:
-//     key : property's name
-//     value : property's value
-// @returns:
-//     (interface{}): if the key is already saved before, will return the old value
-//     (bool): is have returned an old value
-func (v *Go2Test) setOption(key string, value interface{}) (interface{}, bool) {
-	oldVal, ok := v.options[key]
-	v.options[key] = value
-	return oldVal, ok
-}
-
-
-// Get property
-// @params:
-//     key : property's name
-// @returns:
-//     (interface{}): property's value
-//     (bool): if the key is valid
-func (v *Go2Test) getOption(key string) (interface{}, bool) {
-	val, ok := v.options[key]
-	return val, ok
-}
-
-
-// Set the location of feature files
-// @params:
-//    path: the location
-//          ex:
-//          =========
-//          /root/features,
-//          /root/features/sample.feature,
-//          /root/features/sampel_*.feature
-// @returns:
-//    ([]string): the feature list which founded in the path
-//    (error): error message
-func (v *Go2Test) SetFeaturesLocation(path string) ([]string, error) {
-	matches, err := filepath.Glob(path)
-	if err == nil {
-		v.setOption(G2T_FEATURES, matches)
-	}
-	return matches, err
-}
-
-// Config the running tags
-// @params
-//     tags: the tag array, help user to filter the features and scenarios
-func (v *Go2Test) SetTags(tags []string) {
-	v.setOption(G2T_TAGS, tags)
-}
-
-
-// Add steps
-// @params:
-//    reg: the regex
-//    callback: the action
+//    reg: the regex to match step text
+//    action: func need to run if matched
 // @returns:
 //    (error): Errors
-func (v *Go2Test) AddStep(reg string, callback interface{}) error {
+func (v *Go2Test) AddAction(reg string, action interface{}) *Exception {
 	key, err := regexp.Compile(reg)
 	if err != nil {
-		return err
+		return v.handle.NewException(err.Error())
 	}
-	val := reflect.ValueOf(callback)
-	steps, ok := v.getOption(G2T_STEPS)
-	if !ok {
-		return errors.New(STR_INVALID_INIT_GO2TEST)
-	}
-	steps.(map[*regexp.Regexp]reflect.Value)[key]=val
+	v.actions[key] = reflect.ValueOf(action)
 	return nil
 }
 
@@ -337,20 +343,30 @@ func (v *Go2Test) AddStep(reg string, callback interface{}) error {
 // @params:
 //    step: step's text
 // @returns:
-//    (*reflect.Value) the step action
-func (v *Go2Test) findStepAction(step string) ([]string, *reflect.Value, error) {
-	steps, ok := v.getOption(G2T_STEPS)
-	if !ok {
-		return nil, nil, errors.New(STR_INVALID_INIT_GO2TEST)
-	}
-	for reg, callback := range steps.(map[*regexp.Regexp]reflect.Value) {
+//    ([]string) matched words
+//    (*reflect.Value) action
+//    (*Exception) error
+func (v *Go2Test) findAction(step string) ([]string, *reflect.Value, *Exception) {
+	buf := make([]reflect.Value, 0)
+	matched := make([]string, 0)
+	for reg, action := range v.actions {
 		keywords := reg.FindStringSubmatch(step)
 		if len(keywords) != 0 {
-			return keywords, &callback, nil
+			matched = keywords
+			buf = append(buf, action)
 		}
 	}
-	return nil, nil, errors.New(fmt.Sprintf(STR_INVALID_STEP_TEXT, step))
+
+	switch len(buf) {
+	case 0:
+		return []string{}, nil, v.handle.NewException(fmt.Sprintf("Matched 0 function [%s]", step))
+	case 1:
+		return matched, &buf[0], nil
+	default:
+		return nil, nil, v.handle.NewException(fmt.Sprintf("Matched >1 functions [%s]", step))
+	}
 }
+
 
 // read *.feature to create new *Feature
 // @params:
@@ -358,22 +374,22 @@ func (v *Go2Test) findStepAction(step string) ([]string, *reflect.Value, error) 
 // @returns
 //    (*Feature) new *Feature
 //    (error) Error
-func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
+func (v *Go2Test) createFeature(path string, tags []string) (*Feature, *Exception) {
 
 	if tags == nil {
-		tags = []string{}
+		tags = make([]string, 0)
 	}
 
 	feature := new(Feature)
 
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, v.handle.NewException(err.Error())
 	}
 	gFeature, err := ghk.ParseFeature(f)
 	f.Close()
 	if err != nil {
-		return nil, err
+		return nil, v.handle.NewException(err.Error())
 	}
 
 	if gFeature.Tags != nil && len(gFeature.Tags) > 0 && len(tags) > 0 {
@@ -407,8 +423,8 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 	// Example:
 	// Scenario: @before/^(/*)$  match all scenarios
 	// Scenario: @before/^(.*)stg(.*)$  match all scenarios contains "stg" in its name
-	hook_before := make(map[*regexp.Regexp]*ghk.Scenario)
-	hook_after := make(map[*regexp.Regexp]*ghk.Scenario)
+	hooklib_be := make(HookList, 0)
+	hooklib_af := make(HookList, 0)
 	normal_sce := make([]interface{}, 0)
 
 	for _, s := range gFeature.ScenarioDefinitions {
@@ -416,64 +432,46 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 		if !ok {
 			// Hook Scenario must not be ScenarioOutline
 			normal_sce = append(normal_sce, s)
+			continue
 		}
 
-		sName := strings.TrimSpace(gScenario.Name)
-		if strings.Contains(sName, "/") && strings.Contains(sName, "@"){
-			params := strings.SplitN(sName, "/", 2)
-			key := strings.TrimSpace(params[0])
-			switch strings.ToLower(key) {
-			case "@before":
-				reg, err:= regexp.Compile(strings.TrimSpace(params[1]))
-				if err != nil {
-					return nil, err
-				}
-				hook_before[reg] = gScenario
-			case "@after":
-				reg, err:= regexp.Compile(strings.TrimSpace(params[1]))
-				if err != nil {
-					return nil, err
-				}
-				hook_after[reg] = gScenario
-			default:
-				normal_sce = append(normal_sce, s)
-			}
-		} else {
+		hook,exp := CreateHook(v.handle, gScenario)
+		if exp != nil {
+			return nil, exp
+		}
+
+		if hook == nil {
 			normal_sce = append(normal_sce, s)
+			continue
+		}
+
+		switch hook.key {
+		case "before":
+			hooklib_be = append(hooklib_be, hook)
+		case "after":
+			hooklib_af = append(hooklib_af, hook)
+		default:
+			return nil, v.handle.NewException("Find unsupported hook tag: [%s]", hook.key)
 		}
 	}
+
+	// sort hooklib
+	sort.Sort(hooklib_be)
+	sort.Sort(hooklib_af)
 
 	// Scenario
 	feature.Scenarios = make([]*Scenario, 0)
 	for _, s := range normal_sce {
 		gScenario, ok := s.(*ghk.Scenario)
 
-		hook_b := make([]*ghk.Step, 0)
-		hook_a := make([]*ghk.Step, 0)
+		var hook_b []*ghk.Step
+		var hook_a []*ghk.Step
+//		hook_a := make(map[int][]*ghk.Step)
 
 		if ok {
 			// Search matched before hook
-			for reg, sce := range hook_before {
-				keywords := reg.FindStringSubmatch(strings.TrimSpace(gScenario.Name))
-				if len(keywords) != 0 {
-					if len(hook_b) != 0 {
-						return nil, errors.New("Scenario matched muti before hooks")
-					} else {
-						hook_b = sce.Steps
-					}
-				}
-			}
-			// Search matched after hook
-			for reg, sce := range hook_after {
-				keywords := reg.FindStringSubmatch(strings.TrimSpace(gScenario.Name))
-				if len(keywords) != 0 {
-					if  len(hook_a) != 0 {
-						return nil, errors.New("Scenario matched muti after hooks")
-					} else {
-						hook_a = sce.Steps
-					}
-				}
-			}
+			hook_b = GetHookSteps(hooklib_be, strings.TrimSpace(gScenario.Name))
+			hook_a = GetHookSteps(hooklib_af, strings.TrimSpace(gScenario.Name))
 			scenario, err := v.createScenario(gScenario, gBgSteps, hook_b, hook_a, tags)
 			if err!= nil {
 				return nil, err
@@ -483,29 +481,8 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 				feature.Scenarios = append(feature.Scenarios, scenario)
 			}
 		} else {
-			// Search matched before hook
-			for reg, sce := range hook_before {
-				keywords := reg.FindStringSubmatch(strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
-				if len(keywords) != 0 {
-					if hook_b != nil {
-						return nil, errors.New("Scenario matched muti before hooks")
-					} else {
-						hook_b = sce.Steps
-					}
-				}
-			}
-
-			// Search matched after hook
-			for reg, sce := range hook_after {
-				keywords := reg.FindStringSubmatch(strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
-				if len(keywords) != 0 {
-					if hook_a != nil {
-						return nil, errors.New("Scenario matched muti after hooks")
-					} else {
-						hook_a = sce.Steps
-					}
-				}
-			}
+			hook_b = GetHookSteps(hooklib_be, strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
+			hook_a = GetHookSteps(hooklib_af, strings.TrimSpace(s.(*ghk.ScenarioOutline).Name))
 			scenarios, err := v.createScenarioArray(s.(*ghk.ScenarioOutline), gBgSteps, hook_b, hook_a, tags)
 			if err!= nil {
 				return nil, err
@@ -526,8 +503,10 @@ func (v *Go2Test) createFeature(path string, tags []string) (*Feature, error) {
 //    gScenario: ghk.Scenario
 // @returns:
 //    (*Scenario) new *Scenario
-//    (error) errors
-func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string) (*Scenario, error) {
+//    (*Exception) *Exception
+func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step,
+				hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string ) (*Scenario, *Exception) {
+
 	scenario := new(Scenario)
 
 	if len(tags) > 0 {
@@ -554,8 +533,8 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, h
 	// Step
 	scenario.Steps = make([]*Step, 0)
 
-	for _, gStep := range bgSteps {
-		step, err := v.createStep(gStep, map[string]string{})
+	for i:=0; i<len(bgSteps); i++ {
+		step, err := v.createStep(bgSteps[i], map[string]string{})
 		if err != nil {
 			return nil, err
 		}
@@ -563,8 +542,8 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, h
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
-	for _, gStep := range hook_b {
-		step, err := v.createStep(gStep, map[string]string{})
+	for i:=0; i<len(hook_b); i++  {
+		step, err := v.createStep(hook_b[i], map[string]string{})
 		if err != nil {
 			return nil, err
 		}
@@ -572,8 +551,8 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, h
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
-	for _, gStep := range gScenario.Steps {
-		step, err := v.createStep(gStep, map[string]string{})
+	for i:=0; i<len(gScenario.Steps); i++ {
+		step, err := v.createStep(gScenario.Steps[i], map[string]string{})
 		if err != nil {
 			return nil, err
 		}
@@ -581,8 +560,8 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, h
 		scenario.Steps = append(scenario.Steps, step)
 	}
 
-	for _, gStep := range hook_a {
-		step, err := v.createStep(gStep, map[string]string{})
+	for i:=len(hook_a)-1; i>=0; i-- {
+		step, err := v.createStep(hook_a[i], map[string]string{})
 		if err != nil {
 			return nil, err
 		}
@@ -602,7 +581,8 @@ func (v *Go2Test) createScenario(gScenario *ghk.Scenario, bgSteps []*ghk.Step, h
 //    (*Scenario) The Scenario{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps []*ghk.Step, hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string) ([]*Scenario, error) {
+func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline,
+                  bgSteps []*ghk.Step, hook_b []*ghk.Step, hook_a []*ghk.Step, tags[] string) ([]*Scenario, *Exception) {
 	scenarios := make([]*Scenario, 0)
 
 	// Check Tags
@@ -686,9 +666,9 @@ func (v *Go2Test) createScenarioArray( gScenario *ghk.ScenarioOutline, bgSteps [
 //    (*Step) The Step{} instance
 //    (error) if anything failed
 // ----------------------------------------------------------------------------------
-func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Step, error) {
+func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Step, *Exception) {
 	step := new(Step)
-	step.Text = gStep.Text
+	step.Text = strings.TrimSpace(gStep.Text)
 	step.Params = make([]reflect.Value, 0)
 
 	// update step text with example data
@@ -720,8 +700,8 @@ func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Ste
 		}
 	}
 
-	// Find Kyewords, Action
-	keywords, action, err := v.findStepAction(step.Text)
+	// Find Keywords, Action
+	keywords, action, err := v.findAction(step.Text)
 	if err != nil {
 		return nil, err
 	}
@@ -738,22 +718,26 @@ func (v *Go2Test) createStep(gStep *ghk.Step, example map[string]string, ) (*Ste
 }
 
 
-func (v *Go2Test) Run() (error) {
+// Start to run Go2Test framework
+// @params:
+//     path: test files location ( where *.feature is )
+//     tags: filter by @tag
+func (v *Go2Test) Run(path string, tags []string) *Exception {
 
-	paths, ok := v.getOption(G2T_FEATURES)
-	if !ok {
-		return errors.New("Please call SetFeaturesLocation before Run")
-	}
+	v.handle.clean()
 
-	tags, ok := v.getOption(G2T_TAGS)
-	if !ok {
-		tags = []string{}
+	log.Infof("Search *.feature by [%s]", path)
+	files, err := filepath.Glob(path)
+	if err != nil {
+		return v.handle.NewException(err.Error())
 	}
 
 	features := make([]*Feature, 0)
-	for _, path := range paths.([]string) {
-		feature, err := v.createFeature(path, tags.([]string))
+	for _, p := range files {
+		log.Infof("- %s", p)
+		feature, err := v.createFeature(p, tags)
 		if err != nil {
+			log.Errorf("Reading %s", p)
 			return err
 		}
 		if feature != nil {
@@ -766,6 +750,22 @@ func (v *Go2Test) Run() (error) {
 	}
 
 	return nil
+}
+
+
+func GetHookSteps(lib HookList, s_name string) ([]*ghk.Step) {
+	ret := make([]*ghk.Step, 0)
+	lib_size := len(lib)
+	for i:=0; i<lib_size; i++ {
+		hook := lib[i]
+		if len(hook.Regex.FindStringSubmatch(s_name)) != 0 {
+			step_size := len(hook.Steps)
+			for j:=0; j<step_size; j++ {
+				ret = append(ret, hook.Steps[j])
+			}
+		}
+	}
+	return ret
 }
 
 
