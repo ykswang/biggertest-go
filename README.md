@@ -1,4 +1,4 @@
-##### Go2Test
+#### Go2Test
 
 Go2Test is a Cucumber framework, but not only Cucumber
 
@@ -25,7 +25,7 @@ exp := go2test.Run("./examples/*.feature", make([]string, 0))
 ```
 
 
-##### Hooks Before & After
+#### Hooks Before & After
 
 Hook is a special Scenario with name `@tag_name(Priority Level)/regex`
 
