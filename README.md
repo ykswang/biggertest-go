@@ -8,19 +8,18 @@ Go2Test is a Cucumber framework, but not only Cucumber
 ```go
 go2test := NewGo2Test()
 go2test.AddAction("^Name is (.*)$", func(handle *Handle, name string){
-		handle.Buffer["name"] = name
+	handle.Buffer["name"] = name
 })
 go2test.AddAction("^print name$", func(handle *Handle){
-		fmt.Printf("%+v", handle.Buffer["name"].(string))
+	fmt.Printf("%+v", handle.Buffer["name"].(string))
 })
 
 exp := go2test.Run("./examples/*.feature", make([]string, 0))
-    if exp != nil {
-		fmt.Printf("%s", exp.Message)
-		msgs := strings.Split(exp.Stack, "\n")
-		for _, msg := range msgs {
-			fmt.Printf("%s", msg)
-		}
+if exp != nil {
+	fmt.Printf("%s", exp.Message)
+	msgs := strings.Split(exp.Stack, "\n")
+	for _, msg := range msgs {
+	fmt.Printf("%s", msg)
 }
 ```
 
